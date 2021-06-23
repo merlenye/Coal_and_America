@@ -1,0 +1,191 @@
+---
+title: "Productivity"
+author: "Merle Nye"
+date: "5/1/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries}
+library(tidyverse)
+library(infer)
+```
+
+```{r data}
+data <- EIA.7A_Compiled2
+```
+
+```{r filter}
+data <- data%>%
+  filter(mine.status == "Active")%>%
+  filter(year >= 2000)%>%
+  filter(!is.na(production.stons))%>%
+  filter(!is.na(labor.hours))%>%
+  mutate(labor.hours = as.numeric(labor.hours))%>%
+  mutate(production.stons = as.numeric(production.stons))%>%
+  mutate(productivity = production.stons / labor.hours)%>%
+  filter(productivity >1)
+```
+
+```{r analysis}
+for_2000 <- data %>%
+  filter(year == 2000)
+for_2008 <- data %>%
+  filter(year == 2008)
+for_2016 <- data %>%
+  filter(year == 2016)
+nrow(for_2000)
+nrow(for_2008)
+nrow(for_2016)
+```
+
+```{r Appalachia}
+data <- data%>%
+  mutate(appalachia = case_when(mine.state == "Kentucky (East)" ~ "Yes", mine.state == "Kentucky (West)" ~ "Yes", mine.state == "Tennessee" ~ "Yes", mine.state == "West Virginia" ~ "Yes", mine.state == "Virginia" ~ "Yes", mine.state == "West Virginia (Southern)" ~ "Yes", mine.state == "West Virginia (Northern" ~ "Yes" ))
+```
+
+```{r divide}
+app_data <- data%>%
+  filter(appalachia == "Yes")
+not_app <- data%>%
+  filter(is.na(appalachia))
+app_sum <- app_data%>%
+  filter(!is.na(production.stons)) %>%
+  filter(!is.na(labor.hours))%>%
+  group_by(year)%>%
+  tally()
+not_app_sum <- not_app%>%
+  filter(!is.na(production.stons))%>%
+  group_by(year)%>%
+  tally()%>%
+  rename(no_app = n)
+sum_both <- merge(not_app_sum, app_sum, by = "year")
+```
+
+```{r plot}
+ggplot()+
+   labs(y = "Active Mines", x = "Year")+
+  geom_line(data = app_sum, aes(x=year, y = n), color = "blue")+
+  geom_line(data = not_app_sum, aes(x=year, y = no_app), color = "red")
+  
+```
+
+```{r refined_plot}
+app_sum_2007 <- app_sum%>%
+  filter(year >= 2007)
+  
+not_app_sum_2007 <- not_app_sum %>%
+  filter(year >= 2007)
+ggplot()+
+   labs(title = "Number of Active Mines", y = "Active Mines", x = "Year")+
+  geom_line(data = app_sum_2007, aes(x=year, y = n), color = "blue")+
+  geom_line(data = not_app_sum_2007, aes(x=year, y = no_app), color = "red")
+```
+
+```{r production}
+app_data_prod <-app_data%>%
+  mutate(labor.hours = as.numeric(labor.hours))%>%
+  mutate(production.stons = as.numeric(production.stons))
+app_data_prod <- app_data_prod%>%
+  filter(!is.na(production.stons))%>%
+  mutate(productivity = production.stons / labor.hours)%>%
+  filter(productivity >1)
+  
+```
+
+```{r functions}
+production_change <- function(yearof){
+  newdata <- app_data_prod%>%
+    filter(year == yearof)
+  med <- median(newdata$productivity)
+  newdatalow <- newdata%>%
+    filter(productivity < med)
+  point <- median(newdatalow$productivity)
+  newdatalow <- newdata%>%
+    filter(productivity < point)
+  newdatahigh <- newdata%>%
+    filter(productivity >= point)
+  newdata2 <- app_data_prod%>%
+    filter(year == (yearof+1))
+  nameslow <- newdatalow$mine.name
+  nameshigh <- newdatahigh$mine.name
+  newnames<-newdata2 <- newdata2$mine.name
+  low_and_new <-intersect(nameslow, newnames)
+  high_and_new <- intersect(nameshigh,newnames)
+  higher <- (length(high_and_new)/nrow(newdatahigh))
+  lower <- (length(low_and_new)/nrow(newdatalow))
+  higher <-higher*100
+  lower<- lower*100
+  return(c(higher, lower))
+}
+l <-c()
+m <- c()
+ye <- 2009
+while(ye < 2016){
+  b <- production_change(ye)
+  l<-c(l,b[1])
+  m<-c(m,b[2])
+  ye= ye+1
+}
+
+```
+
+```{r combine_lists}
+change_df <-as.data.frame(m)
+change_df <- change_df%>%
+  mutate(lower = factor("yes"))%>%
+  rename(prop = m)
+change_df_2 <- as.data.frame(l)
+
+change_df2 <- change_df_2%>%
+  mutate(lower = factor( "no"))%>%
+  rename(prop = l)
+year_change <- c(2010,2011,2012,2013,2014,2015,2016)
+changes1 <- cbind(year_change,change_df)
+changes2 <- cbind(year_change, change_df2)
+changes<- rbind(changes1,changes2)
+```
+
+}
+
+
+
+```{r plot_change}
+ggplot(changes, aes(year_change))+
+  geom_line(aes(y=m, color = "Less Productive Mines"))+
+  geom_line(aes(y=l, color = "Productive Mines"))+
+  scale_y_continuous(name="Percentage", limits=c(.3,.7))+
+  labs(title = "Mines Open From Previous Year", x = "Year")
+              
+```
+
+
+```{r means}
+observed_difference <- changes%>%
+  group_by(lower)%>%
+  summarise(meaner = mean(prop))%>%
+  summarise(diff(meaner))%>%
+  pull()
+```
+
+```{r build_dist}
+null_dist_income <-changes%>%
+  specify(response = prop, explanatory = lower) %>%
+  hypothesize(null = "independence")%>%
+  generate(reps = 1000, type = "permute") %>%
+  calculate(stat = "diff in means", order = c("yes", "no"))
+```
+
+```{r val}
+null_dist_income %>%
+  filter(stat <= (observed_difference)) %>%
+  summarise(value = (n()/nrow(null_dist_income)))
+```
+
+```{r writer}
+write.csv(changes, file = "changes.csv")
+
+```

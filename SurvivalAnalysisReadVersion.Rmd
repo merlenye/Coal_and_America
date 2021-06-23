@@ -1,0 +1,565 @@
+---
+title: "Productivity"
+author: "Merle Nye"
+date: "5/1/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries}
+library(tidyverse)
+library(infer)
+library(survminer)
+library(survival)
+library(hablar)
+library(dplyr)
+library(rms)
+```
+
+```{r data}
+library(readr)
+EIA_7A_Compiled2 <- read_csv("EIA-7A_Compiled_fixed.csv")
+data <- EIA_7A_Compiled2
+head(EIA_7A_Compiled2)
+```
+
+Fitlers for observation later than 2001 that are listed as active, produce coal, and have logged labor hours for a given year
+
+```{r filter}
+data <- data%>%
+  filter(mine.status == "Active")%>%
+  filter(year >= 2001)%>%
+  filter(!is.na(production.stons))%>%
+  filter(!is.na(labor.hours))%>%
+  filter(production.stons != 0)%>%
+  mutate(productivity = (production.stons/ labor.hours))
+  
+```
+
+Quick look at total production tons for each year to verify later observations
+
+```{r total}
+total <- data%>%
+  group_by(year)%>%
+  summarize(bigt = sum(production.stons))
+total
+```
+
+Creates a binary variable for being located in Appalachia
+
+```{r Appalachia}
+data <- data%>%
+  mutate(appalachia = case_when(mine.state == "Kentucky (East)" ~ "Yes", mine.state == "Kentucky (West)" ~ "Yes", mine.state == "Tennessee" ~ "Yes", mine.state == "West Virginia" ~ "Yes", mine.state == "Virginia" ~ "Yes", mine.state == "West Virginia (Southern)" ~ "Yes", mine.state == "West Virginia (Northern" ~ "Yes" ))
+```
+
+
+Below, the mines are categorizd as either low productivity or high productivity over the course of the years in question. The median is determined by the median productivity of the year of the observation.
+
+
+```{r survival_function}
+year_closed <- function(id){
+  yearin = 2008
+  downed <- 2016
+  while(yearin <= 2016){
+  current_year <- data%>%
+    filter(year==yearin)
+  current_year <- current_year[,'msha.id']
+  if ((id %in% current_year$msha.id) == TRUE){
+    yearin <- yearin+1
+  }else{
+    downed <- yearin - 1
+    break
+  }
+  }
+  return(downed)
+}
+ 
+```
+
+This function creates a binary variable to track if the mine was listed in the previous year or not. This is useful for tracking which mines opened that year (or reopened)
+
+```{r open_function}
+year_open <- function(varia){
+  yearer <- data_for_open%>%
+    filter(rank == varia)%>%
+    pull(year)
+  id <- data_for_open%>%
+    filter(rank == varia)%>%
+    pull(msha.id)
+  id <- id[1]
+  prev_year <- data%>%
+    filter(year==yearer-1)
+  prev_year <- prev_year[,'msha.id']
+  if ((id %in% prev_year$msha.id) == TRUE){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+```
+
+This chunk applies the previous function to the dataset and outputs complete_open which is all observations since 2008 with the binary variable created by the function
+
+```{r apply_open_function}
+data_for_open <- data%>%
+  filter(year >= 2008)
+ 
+data_for_open <- data_for_open%>%
+  mutate(rank = 1:nrow(data_for_open))%>%
+   mutate(newvar = (rank))
+data_for_open%>%
+  group_by((newvar))%>%
+  summarize(count=n())
+open_table <- lapply(data_for_open$newvar, year_open)
+
+new_open_table <- as.data.frame(do.call(rbind,open_table))
+new_open_table <- new_open_table%>%
+  mutate(rank=1:nrow(new_open_table))
+
+complete_open <- full_join(data_for_open, new_open_table)
+```
+
+The compolete open data set used here includes all mines since 2008 while the grand dataframe ONLY contains observations from that time that were ALSO in 2008. This code chunk outputs a table showing the difference in effeciency between mines that "opened" (were not listed in the previous year) in a given year vs mines that were open in the prior year. 
+
+```{r open_effeciency}
+new_vs_old_exclusive <- grand%>%
+  group_by(year.x, V1)%>%
+  summarize(effeciency = mean(productivity.x))
+new_vs_old_inclusive <- new_vs_old_exclusive%>%
+  group_by(year)%>%
+  summarize(effeciency_total = mean(effeciency))
+total_old_new <- left_join(new_vs_old_exclusive, new_vs_old_inclusive, by="year")
+
+new_vs_old_avg <- complete_open%>%
+  group_by(V1)%>%
+  summarize(avg_eff = mean(productivity))
+write.csv(total_old_new, file = "New_vs_Old_mine_effeciency")
+
+```
+
+This chunk simply plots the effeciency of old vs new mines over the observed period
+
+```{r open_graphs}
+ggplot(new_vs_old_exclusive, aes(x=year, y =effeciency, color = (factor(V1))))+
+  geom_line()
+
+```
+
+This chunk creates complete_downer which is a frame containing all the observations in 2008 with the year they closed and weather or not the year they closed was an "up" or "down" year as far as the national production trend
+
+```{r test_above}
+data2<- data%>%
+  filter(year == 2008)
+data2 <- data2%>%
+  mutate(
+    rank = 1:nrow(data2))
+
+newtable <- lapply(data2$msha.id, year_closed)
+
+newtable <- as.data.frame(do.call(rbind,newtable))
+
+newtable <- newtable%>%
+  mutate(rank = 1:nrow(newtable))
+complete_downed <- full_join(data2, newtable)
+complete_downed <- complete_downed%>%
+  mutate(nat_trend = case_when(V1 == 2008 ~ "up",V1 == 2008 ~ "up", V1 == 2010 ~ "up", V1 != 2008 & V1 != 2010 ~ "down"))
+complete_downed$appalachia <- replace_na(complete_downed$appalachia, "No")
+  
+```
+
+The next three functions estbalish quartiles in productivity for each year. They are called later in the script to assign each observation a binary variable to indicate if it is in either the top or bottom 25% of productivity for a given year.
+
+
+```{r low_function}
+data_copy <- data
+
+year_bar_low <- function(yearin){
+  new_data<- filter(data_copy, year == yearin)
+  low_bar <-(quantile(new_data$productivity, c(0.25)))
+  return(low_bar)
+}
+yo <- year_bar(2008)
+list_low <-c()
+ye <- 2008
+while(ye <= 2016){
+  c <- year_bar_low(ye)
+  list_low<-c(list_low,c[1])
+  ye= ye+1
+}
+```
+
+```{r high_function}
+year_bar_high <- function(yearin){
+  new_data<- filter(data, year == yearin)
+  high_bar <- unname(quantile(new_data$productivity, c(0.75)))
+  return(high_bar)
+}
+
+list_high <-c()
+ye <- 2008
+while(ye <= 2016){
+  b <- year_bar_high(ye)
+  list_high<-c(list_high,b[1])
+  ye= ye+1
+}
+bar_table <- as.data.frame(list_high)
+bar_table<- as.data.frame(cbind(list_high, list_low))
+yearer <- c(2008,2009,2010,2011,2012,2013,2014,2015,2016)
+bar_table<- as.data.frame(cbind(bar_table, yearer))
+```
+
+bar_table is a data frame to track the high and low quartiles for production in each year
+
+```{r high_low}
+since2008 <- data%>%
+  filter(year >=2008)
+mine_sum <- since2008%>%
+  group_by(msha.id)%>%
+  summarize(avg_prod = mean(productivity))
+total_surv <- merge(x = complete_downed, y=mine_sum, by = "msha.id", all.x = TRUE)
+ 
+
+total_surv<- total_surv%>%
+  mutate(prod_high = case_when(avg_prod < median_productivity ~ "0", avg_prod > median_productivity ~ "1"))%>%
+  select(-countystr, -operating.company.address, -operating.company)%>%
+  mutate(time = V1-2007)
+total_surv$appalachia <- replace_na(total_surv$appalachia, "No")
+total_surv <- total_surv[order(total_surv$time),]
+```
+
+This function is used to determine if a mine temporarily closed in the period between 2008 and 2016. 
+
+```{r temp_close}
+temp_close <- function(id){
+  yearin = 2008
+  max = 0
+  switch = 0
+  while(yearin <= 2016){
+  current_year <- complete_open%>%
+    filter(year==yearin)
+  current_year <- current_year[,'msha.id']
+  if ((id %in% current_year$msha.id && switch == 0) == TRUE){
+    switch <-1
+    max <- max +1
+  }
+  if ((id %in% current_year$msha.id ) == FALSE){
+    if((switch == 0) == FALSE){
+    switch <-0
+    max <- max +1
+    }
+  }
+  yearin <- yearin+1
+  }
+  if (2<max){
+    return (0)
+  }
+  else{
+    return (1)
+  }
+}
+  
+```
+
+This remakes the grand table with several new variables used in later analysis. It designates mines as top 25% or bottom 25% of effeciency for the year in question and assigns surface mines a binary variable.
+
+```{r remake_total}
+grand <- right_join(x = since2008, y=total_surv, by = "msha.id")
+
+grand<- grand%>%
+  mutate(surface = case_when(mine.type.x != "Surface" ~ 0, mine.type.x == "Surface" ~ 1))%>%
+  mutate(union_code = case_when(
+    is.na(union.code.x) ~ 0, !is.na(union.code.x) ~ 1
+  ))
+grand<- merge(x= grand, y = bar_table, by.x = "year.x", by.y = "yearer")
+grand<- grand%>% 
+  mutate(high = case_when(
+    productivity.x > list_high ~ 1, productivity.x <= list_high ~ 0))%>%
+   mutate(alive = case_when(V1 == 2016 ~ 0, V1 != 2016 ~ 1))%>%
+  mutate(low = case_when(
+    productivity.x < list_low ~ 1, productivity.x >= list_low ~ 0))%>%
+  mutate(time = year.x - 2007)%>%
+  rename(appalachia = appalachia.y)
+```
+
+This chunk applies the temporarily close test and joins it with the main dataframe, grand.
+
+```{r apply_test}
+test_table <- lapply(grand$msha.id, temp_close)
+
+new_test_table <- do.call(rbind.data.frame, test_table)
+
+colnames(new_test_table) <- "temporary_close"
+new_test_table <- new_test_table%>%
+  mutate(rank = 1:nrow(new_test_table))
+
+
+grand_with_test <- left_join(grand, new_test_table, by = "rank")
+head(grand_with_test)
+head(new_test_table)
+```
+
+Clean grand here is used to select only the necessary variables for the subsequent analysis
+
+```{r clean_grand}
+clean_grand <- grand %>%
+  select(year.x, msha.id, mine.name.x, V1, alive, avg_prod, appalachia, productivity.x, surface, union_code, nat_trend)%>%
+  mutate(time = year.x - 2007)
+```
+
+
+
+```{r never_close}
+never_close <- grand_with_test%>%
+  mutate(alive = case_when(alive == 1 ~ temporary_close, alive != 1 ~ alive))%>%
+  mutate(time = year.x - 2007)
+  
+```
+
+The below chunk creates a dataset that excludes any mines that temporarily closed to remove them from survival analysis when necessary
+
+```{r removed}
+removed<- grand_with_test%>%
+  filter(temporary_close != 0)%>%
+  mutate(time = year.x - 2007)
+```
+
+The remainder of the code is used to run various survival tests on either clean_grand, which includes observations of mines that temporarily close and removed, which does not. The output of these chunks is included in the excel file and draft of the report 
+
+
+```{r univariate_cox}
+surv_object<- Surv(time = edited_surv$time, event = edited_surv$alive)
+
+surv_object2<- Surv(time = edited_surv2$time, event = edited_surv2$alive)
+```
+
+
+```{r surv_fit}
+surv_diff <- survdiff(Surv(time, alive) ~ appalachia, data = clean_grand)
+surv_diff
+
+surv_diff_removed <- survdiff(Surv(time,alive)~ appalachia, data = removed)
+surv_diff_removed
+
+surv_diff_never_close <- survdiff(Surv(time,alive)~appalachia, data = never_close)
+surv_diff_never_close
+```
+
+```{r surv_fit_high_low}
+surv_diff <- survdiff(Surv(time, alive) ~ low, data = grand)
+
+fithl<- survfit(Surv(time, alive) ~ low, data = grand)
+summary(fithl)
+fithl$surv
+fithlp <- ggsurvplot(fithl, data = grand, pval = TRUE)
+fithlp
+
+surv_diff_removed <- survdiff(Surv(time, alive) ~ low, data = removed)
+
+fithl_removed<- survfit(Surv(time, alive) ~ low, data = removed)
+summary(fithl_removed)
+fithlp_removed <- ggsurvplot(fithl_removed, data = removed, pval = TRUE)
+fithlp_removed
+
+surv_diff_never_close <- survdiff(Surv(time, alive) ~ low, data = never_close)
+
+fithl_never_close<- survfit(Surv(time, alive) ~ low, data = never_close)
+summary(fithl_never_close)
+
+fithlp_never_close <- ggsurvplot(fithl_never_close, data = removed, pval = TRUE)
+fithlp_never_close
+```
+
+```{r survivial_fit}
+fit1<- survfit(Surv(time, alive) ~ appalachia, data = grand)
+summary(fit1)
+fit1 <- ggsurvplot(fit1, data = grand, pval = TRUE)
+fit1
+
+fit1_removed<- survfit(Surv(time, alive) ~ appalachia, data = removed)
+summary(fit1_removed)
+fit1_removed <- ggsurvplot(fit1_removed, data = removed, pval = TRUE)
+fit1_removed
+
+fit1_never_close<- survfit(Surv(time, alive) ~ appalachia, data = never_close)
+summary(fit1_never_close)
+fit1_never_close <- ggsurvplot(fit1_never_close, data = never_close, pval = TRUE)
+fit1_never_close
+```
+
+
+
+```{r high_and_low}
+datahl<- grand%>%
+  filter(low == 1 | high == 1)%>%
+  mutate(highest = case_when(low == 1 ~ 0, high == 1 ~ 1))
+fithl<- survfit(Surv(time, alive) ~ highest, data = datahl)
+summary(fithl)
+
+fithlg <- ggsurvplot(fithl, data = datahl, pval = TRUE)
+fithlg
+
+datahl_removed<- removed%>%
+  filter(low == 1 | high == 1)%>%
+  mutate(highest = case_when(low == 1 ~ 0, high == 1 ~ 1))
+fithl_removed<- survfit(Surv(time, alive) ~ highest, data = datahl_removed)
+summary(fithl_removed)
+
+fithlg_removed <- ggsurvplot(fithl_removed, data = datahl_removed, pval = TRUE)
+fithlg_removed
+
+datahl_never_close<- never_close%>%
+  filter(low == 1 | high == 1)%>%
+  mutate(highest = case_when(low == 1 ~ 0, high == 1 ~ 1))
+fithl_never_close<- survfit(Surv(time, alive) ~ highest, data = datahl_never_close)
+summary(fithl_never_close)
+
+fithlg_never_close <- ggsurvplot(fithl_never_close, data = datahl_never_close, pval = TRUE)
+fithlg_never_close
+```
+
+```{r national_trend}
+fit5<- survfit(Surv(time, alive) ~ nat_trend, data = clean_grand)
+summary(fit5)
+
+fito <- ggsurvplot(fit5, data = clean_grand, pval = TRUE)
+fito
+
+fit5_removed<- survfit(Surv(time, alive) ~ nat_trend, data = removed)
+summary(fit5_removed)
+
+fito_removed <- ggsurvplot(fit5_removed, data = removed, pval = TRUE)
+fito_removed
+
+fit5_never_close<- survfit(Surv(time, alive) ~ nat_trend, data = never_close)
+summary(fit5_never_close)
+
+fito_never_close <- ggsurvplot(fit5_never_close, data = never_close, pval = TRUE)
+fito_never_close
+```
+
+```{r survivial_fit_union}
+fit2<- survfit(Surv(time, alive) ~ union_code, data = clean_grand)
+
+fitm <- ggsurvplot(fit2, data = clean_grand, pval = TRUE)
+fitm
+summary(fit2)
+
+fit2_removed<- survfit(Surv(time, alive) ~ union_code, data = removed)
+
+summary(fit2_removed)
+
+fitm_removed <- ggsurvplot(fit2_removed, data = removed, pval = TRUE)
+fitm_removed
+
+fit2_never_close<- survfit(Surv(time, alive) ~ union_code, data = never_close)
+
+summary(fit2_never_close)
+
+fitm_never_close <- ggsurvplot(fit2_never_close, data = never_close, pval = TRUE)
+fitm_never_close
+```
+
+```{r survivial_fit_surface}
+fit3<- survfit(Surv(time, alive) ~ surface, data = clean_grand)
+
+fitn <- ggsurvplot(fit3, data = clean_grand, pval = TRUE)
+summary(fit3)
+fitn
+
+fit3_removed<- survfit(Surv(time, alive) ~ surface, data = removed)
+summary(fit3_removed)
+fitn_removed <- ggsurvplot(fit3_removed, data = removed, pval = TRUE)
+fitn_removed
+
+fit3_never_close<- survfit(Surv(time, alive) ~ surface, data = never_close)
+summary(fit3_never_close)
+fitn_never_close <- ggsurvplot(fit3_never_close, data = never_close, pval = TRUE)
+summary(fitn_never_close)
+fitn_never_close
+```
+
+```{r cox_haz}
+fit_cox<- coxph(Surv(time, alive) ~  appalachia + union_code + surface, data = grand)
+summary(fit_cox)
+vif(fit_cox)
+fit_cox_removed<- coxph(Surv(time, alive) ~  appalachia + union_code + surface, data = removed)
+summary(fit_cox_removed)
+vif(fit_cox_removed)
+
+fit_cox_never_close<- coxph(Surv(time, alive) ~  appalachia + union_code + surface, data = never_close)
+summary(fit_cox_never_close)
+vif(fit_cox_never_close)
+
+```
+
+```{r univariate_analysis}
+
+fit_cox_uni_union<- coxph(Surv(time, alive) ~ union_code, data = grand)
+summary(fit_cox_uni_union)
+
+fit_cox_uni_low<- coxph(Surv(time, alive) ~ low, data = grand)
+summary(fit_cox_uni_low)
+
+fit_cox_uni_surface <- coxph(Surv(time, alive) ~ surface, data = grand)
+summary(fit_cox_uni_surface)
+
+fit_cox_uni_high<- coxph(Surv(time, alive) ~ high, data = grand)
+summary(fit_cox_uni_high)
+
+
+fit_cox_uni_union_removed<- coxph(Surv(time, alive) ~ union_code, data = removed)
+summary(fit_cox_uni_union_removed)
+
+fit_cox_uni_low_removed<- coxph(Surv(time, alive) ~ low, data = removed)
+summary(fit_cox_uni_low_removed)
+
+fit_cox_uni_surface_removed <- coxph(Surv(time, alive) ~ surface, data = removed)
+summary(fit_cox_uni_surface_removed)
+
+fit_cox_uni_high_removed<- coxph(Surv(time, alive) ~ high, data = removed)
+summary(fit_cox_uni_high_removed)
+
+fit_cox_uni_union_never_close<- coxph(Surv(time, alive) ~ union_code, data = never_close)
+summary(fit_cox_uni_union_never_close)
+
+fit_cox_uni_low_never_close<- coxph(Surv(time, alive) ~ low, data = never_close)
+summary(fit_cox_uni_low_never_close)
+
+fit_cox_uni_surface_never_close <- coxph(Surv(time, alive) ~ surface, data = never_close)
+summary(fit_cox_uni_surface_never_close)
+
+fit_cox_uni_high_never_close<- coxph(Surv(time, alive) ~ high, data = never_close)
+summary(fit_cox_uni_high_never_close)
+
+
+
+
+
+to_vif <- coxph(Surv(time, alive) ~ appalachia +union_code + surface, data = grand)
+
+is_vif <-vif(lm(alive ~ appalachia + union_code +, data=grand))
+vif(to_vif)
+
+
+```
+
+
+
+```{r plot_cox}
+forest <- ggforest(coxph(Surv(time, alive) ~ appalachia +union_code + low, data = grand))
+forest
+
+forest_removed <- ggforest(coxph(Surv(time, alive) ~ appalachia +union_code + low, data = removed))
+forest_removed
+
+forest_never_close <- ggforest(coxph(Surv(time, alive) ~ appalachia +union_code + low, data = never_close))
+forest_never_close
+```
+
+```{r surv_expo}
+fit_cox_uni<- coxph(Surv(time, alive) ~ nat_trend, data = edited_surv)
+summary(fit_cox_uni)
+```

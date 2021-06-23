@@ -1,0 +1,32 @@
+---
+title: "Exports"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_libraries}
+library(readxl)
+```
+
+```{r load_data}
+BOM_Coal_Exports_1945_1962_copy <- read_excel("BOM_Coal_Exports_1945_1962 copy.xlsx")
+View(BOM_Coal_Exports_1945_1962_copy)
+```
+
+```{r rename}
+colnames(BOM_Coal_Exports_1945_1962_copy)[3] <- "Exports"
+```
+
+```{r filter}
+Europe_NA <- BOM_Coal_Exports_1945_1962_copy %>%
+  filter(Continent == "Europe" | Continent == "North America")
+```
+
+```{r plot}
+ggplot(data = Europe_NA, aes(y = Exports, x = Year, color = Continent))+
+  geom_point()+
+  geom_line()
+```

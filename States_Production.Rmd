@@ -1,0 +1,83 @@
+---
+title: "Exploratory graphs"
+output: html_document
+Sys.setenv("plotly_username"="merleinye")
+Sys.setenv("plotly_api_key"="rfgrWHi8vpZPbh4wWMlq")
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(plotly)
+```
+
+```{r}
+Sys.setenv("plotly_username"= "merleinye")
+Sys.setenv("plotly_api_key"="rfgrWHi8vpZPbh4wWMlq")
+```
+
+```{r refineEIA}
+eia <- EIA
+years <- eia[eia$year > 2000,]
+years <- years %>%
+  mutate(mine.state = str_extract(mine.state, "\\w+"))
+  
+states <- years[years$mine.state == "Kentucky" | years$mine.state == "Tennessee" | years$mine.state == "West" | years$mine.state == "Virginia",]
+states$mine.state[states$mine.state == "West"] <- "West Virginia"
+
+```
+
+```{r state_plot}
+estotal <- states %>%
+  group_by(mine.state, year) %>%
+  summarise(count = n(), hours = sum(labor.hours, na.rm=TRUE), prod = sum(production.stons,na.rm=TRUE), emp = sum(average.employees, na.rm=TRUE))
+```
+
+```{r}
+p <-ggplot(data = estotal, mapping = aes(x = year, y = prod, color = mine.state))+
+  geom_point()+ 
+  geom_line()+
+  scale_y_continuous(name="Total Production (Tons)", labels = scales::comma)+
+  labs(color = "State")
+
+p
+```
+
+```{r}
+plotof <- ggplotly(ggplot(data = estotal, mapping = aes(x = year, y = prod, color = mine.state, frame = year))+
+  geom_point())
+    
+    ```
+
+```{r polotter}
+plotof <- ggplotly(ggplot(data = estotal,  aes(x = mine.state, y = prod, frame = year, color = mine.state))+
+  geom_point()+ 
+  scale_y_continuous(name="Total Production (Tons)", labels = scales::comma, limit = c(0, 170000000))+
+  labs(color = "State"))
+api_create(plotof, filename = "State_Production_dynamic")
+plotof
+```
+
+
+
+```{r}
+plotof2 <- ggplotly(ggplot(data = estotal,  aes(x = mine.state, y = prod, frame = year))+
+  geom_bar()+ 
+  scale_y_continuous(name="Total Production (Tons)", labels = scales::comma)+
+  labs(color = "State"))
+
+plotof2
+```
+
+```{r}
+movingbars <- ggplotly(ggplot(data = estotal, aes(x = mine.state, y = prod, frame = year))+
+  scale_y_continuous(name="Total Production (Tons)", labels = scales::comma)+
+  geom_col(stat = "identity", frame = estotal$year))
+
+
+
+movingbars
+```
